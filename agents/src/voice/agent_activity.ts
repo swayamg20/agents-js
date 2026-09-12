@@ -4997,6 +4997,11 @@ export class AgentActivity implements RecognitionHooks {
         if (this.closed || this.agentSession._closing) {
           throw new ToolError('the activity that awaited the inline task is closing');
         }
+        // A handoff holds the session transition lock while draining this task's owner.
+        // Check after acquiring the slot so a preceding inline task can resume us first.
+        if (this.newTurnsBlocked || this.schedulingPaused) {
+          throw new ToolError('the activity that awaited the inline task is draining');
+        }
 
         // A run must only watch this task once it has the slot. Otherwise it would wait
         // for user input needed by the task currently ahead of it.
