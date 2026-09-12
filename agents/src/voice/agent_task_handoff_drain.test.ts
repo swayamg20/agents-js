@@ -36,9 +36,13 @@ it.each([
   { timing: 'during handoff drain', shutdown: false },
   { timing: 'during handoff onExit', shutdown: true },
   { timing: 'during handoff drain', shutdown: true },
+  { timing: 'during queued handoff onExit', shutdown: false },
+  { timing: 'during queued handoff onExit', shutdown: true },
 ] as const)(
   'settles a non-cancellable tool that starts an AgentTask $timing (shutdown=$shutdown)',
   async ({ timing, shutdown }) => {
+    const queued = timing === 'during queued handoff onExit';
+    const duringOnExit = timing === 'during handoff onExit' || queued;
     const admission = new Future<void>();
     const started = new Future<void>();
     const result = new Future<unknown>();
@@ -47,6 +51,7 @@ it.each([
     const finishTool = new Future<void>();
     const taskEntered = vi.fn();
     const targetEntered = vi.fn();
+    const root = Agent.create({ instructions: 'root' });
     const target = Agent.create({ instructions: 'target', onEnter: targetEntered });
     const task = AgentTask.create<string>({
       instructions: 'complete immediately',
@@ -57,9 +62,12 @@ it.each([
     });
     const agent = Agent.create({
       instructions: 'source',
+      onEnter: async () => {
+        if (queued) session.generateReply({ userInput: 'transfer' });
+      },
       onExit: async () => {
         exiting.resolve();
-        if (timing === 'during handoff onExit') await finishExit.await;
+        if (duringOnExit) await finishExit.await;
       },
       tools: [
         tool({
@@ -97,10 +105,16 @@ it.each([
     let closing: Promise<void> | undefined;
 
     try {
-      await session.start({ agent });
-      const sourceActivity = agent._agentActivity!;
-      session.generateReply({ userInput: 'transfer' });
+      await session.start({ agent: queued ? root : agent });
+      if (queued) {
+        // Both requests initially block root, not the intermediate source activity.
+        session.updateAgent(agent);
+        session.updateAgent(target);
+      } else {
+        session.generateReply({ userInput: 'transfer' });
+      }
       await started.await;
+      const sourceActivity = agent._agentActivity!;
       await vi.waitFor(() => expect(sourceActivity.currentSpeech).toBeUndefined());
 
       if (timing === 'before handoff') {
@@ -108,9 +122,9 @@ it.each([
         expect(await result.await).toBe('done');
       }
 
-      session.generateReply({ userInput: 'switch' });
+      if (!queued) session.generateReply({ userInput: 'switch' });
       if (timing !== 'before handoff') {
-        if (timing === 'during handoff onExit') {
+        if (duringOnExit) {
           await exiting.await;
           expect(sourceActivity.schedulingPaused).toBe(false);
         } else {
@@ -139,6 +153,7 @@ it.each([
         await session.close();
       }
       expect(agent._agentActivity).toBeUndefined();
+      expect(root._agentActivity).toBeUndefined();
       expect(task._agentActivity).toBeUndefined();
       expect(target._agentActivity).toBeUndefined();
     } finally {

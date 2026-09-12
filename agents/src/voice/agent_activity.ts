@@ -5140,6 +5140,10 @@ export class AgentActivity implements RecognitionHooks {
     try {
       if (this._schedulingPaused) return undefined;
 
+      // Queued handoffs may have blocked an earlier activity, not this one.
+      // Close admission before onExit can start an inline task that awaits this drain.
+      this.blockNewTurns();
+
       this._onExitTask = this.createSpeechTask({
         taskFn: () =>
           tracer.startActiveSpan(async () => this.agent.onExit(), {
